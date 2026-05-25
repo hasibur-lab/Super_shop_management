@@ -2,6 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { User, Store, Product, Order, Message, UserRole } from '../types.js';
 import { Shield, Home, Users, Store as StoreIcon, ShoppingBag, Plus, Map, MapPin, Check, X, Phone, Edit, UploadCloud, Barcode, Search, ShoppingCart, Trash2, MessageCircle, Clock, Camera } from 'lucide-react';
 import { BarcodeScannerModal } from './BarcodeScannerModal.js';
+import { CameraCaptureModal } from './CameraCaptureModal.js';
+import { getAccessToken, uploadToGoogleDrive, googleSignIn } from '../lib/driveAuth.js';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import JSZip from 'jszip';
 
@@ -83,8 +85,13 @@ export default function AdminPanel({ token, currentUser, activeTab: propActiveTa
   const [prodPrice, setProdPrice] = useState('');
   const [prodStock, setProdStock] = useState('');
   const [prodImage, setProdImage] = useState('');
+  const [prodIngredients, setProdIngredients] = useState('');
+  const [prodCategory, setProdCategory] = useState('');
   const [prodError, setProdError] = useState<string | null>(null);
   const [prodSuccess, setProdSuccess] = useState<string | null>(null);
+  const [scannedLocalPrice, setScannedLocalPrice] = useState<string>('');
+  const [scannedOnlinePrice, setScannedOnlinePrice] = useState<string>('');
+  const [scannedIsOnlinePreferred, setScannedIsOnlinePreferred] = useState<boolean>(false);
 
   // User-defined low stock alert threshold state
   const [lowStockThreshold, setLowStockThreshold] = useState<number>(() => {
@@ -102,6 +109,10 @@ export default function AdminPanel({ token, currentUser, activeTab: propActiveTa
   const [isCatalogScannerOpen, setIsCatalogScannerOpen] = useState(false);
   const [isPosScannerOpen, setIsPosScannerOpen] = useState(false);
   const [scannerLoading, setScannerLoading] = useState(false);
+
+  // Directly capture image from camera states
+  const [isCameraCaptureOpen, setIsCameraCaptureOpen] = useState(false);
+  const [cameraTarget, setCameraTarget] = useState<'store' | 'prod'>('prod');
 
   // Live order panel communication states
   const [chattingOrderId, setChattingOrderId] = useState<string | null>(null);
@@ -226,6 +237,87 @@ export default function AdminPanel({ token, currentUser, activeTab: propActiveTa
     return () => clearInterval(interval);
   }, [autoRefreshEnabled, token]);
 
+  // Helper to complete Google Drive upload with intelligent standby failover and local backup fallback
+  const performDriveOrLocalUpload = async (
+    base64String: string,
+    filename: string,
+    target: 'store' | 'prod'
+  ) => {
+    let accountsList = [...(currentUser.googleDriveAccounts || [])];
+    if (currentUser.googleDriveConnected && currentUser.googleDriveEmail && !accountsList.some(a => a.email.toLowerCase() === currentUser.googleDriveEmail.toLowerCase())) {
+      accountsList.push({ email: currentUser.googleDriveEmail.toLowerCase(), isActive: true });
+    }
+
+    // Sort to try Active accounts first, then Standby accounts
+    accountsList.sort((a, b) => (a.isActive === b.isActive ? 0 : a.isActive ? -1 : 1));
+
+    let uploadSuccess = false;
+    let finalPublicUrl = '';
+
+    if (currentUser.googleDriveConnected && accountsList.length > 0) {
+      for (const account of accountsList) {
+        let activeToken = getAccessToken(account.email) || getAccessToken(); // fallback to main cached token
+
+        if (!activeToken) {
+          // Attempt popup authentication if token has expired
+          try {
+            const authConfirm = window.confirm(`Your session token for Google Drive account ${account.email} has expired. Would you like to authenticate now to back up files directly inside Drive?`);
+            if (authConfirm) {
+              const result = await googleSignIn();
+              if (result) {
+                activeToken = result.accessToken;
+              }
+            }
+          } catch (tokError) {
+            console.warn(`Could not authenticate with Google for ${account.email}, moving onto next:`, tokError);
+          }
+        }
+
+        if (activeToken) {
+          try {
+            console.log(`Attempting cloud drive transfer to: ${account.email}`);
+            const result = await uploadToGoogleDrive(activeToken, base64String, filename);
+            finalPublicUrl = result.url;
+            uploadSuccess = true;
+            console.log(`Successfully synced to Drive of: ${account.email}`);
+            break; // Succeeded! Exit account loop.
+          } catch (driveErr: any) {
+            console.error(`Google Drive upload failed or quota exceeded for ${account.email}, trying next connected fallback standby account. Error:`, driveErr);
+            // Continues looping to try other standby/primary accounts!
+          }
+        }
+      }
+    }
+
+    // Fall back to local server storage if no Drive accounts succeeded or connected
+    if (!uploadSuccess) {
+      console.log("No synced Google Drive backup succeeded. Reverting to local secure store backend upload...");
+      const response = await fetch('/api/admin/stores/upload', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ base64Data: base64String, filename })
+      });
+      const uploadResult = await response.json();
+      if (response.ok && uploadResult.success) {
+        finalPublicUrl = uploadResult.url;
+        uploadSuccess = true;
+      } else {
+        throw new Error(uploadResult.error || 'Local storage transfer fallback failed.');
+      }
+    }
+
+    if (uploadSuccess && finalPublicUrl) {
+      if (target === 'store') {
+        setStorePhoto(finalPublicUrl);
+      } else {
+        setProdImage(finalPublicUrl);
+      }
+    }
+  };
+
   // S3 storagePut base64 simulated upload helper
   const handlePhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>, target: 'store' | 'prod') => {
     const file = e.target.files?.[0];
@@ -236,29 +328,29 @@ export default function AdminPanel({ token, currentUser, activeTab: propActiveTa
     reader.onloadend = async () => {
       const base64String = reader.result as string;
       try {
-        const response = await fetch('/api/admin/stores/upload', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`
-          },
-          body: JSON.stringify({ base64Data: base64String, filename: file.name })
-        });
-        const uploadResult = await response.json();
-        if (response.ok && uploadResult.success) {
-          if (target === 'store') {
-            setStorePhoto(uploadResult.url);
-          } else {
-            setProdImage(uploadResult.url);
-          }
-        }
+        await performDriveOrLocalUpload(base64String, file.name, target);
       } catch (err) {
-        console.error('Upload failed with buffer conversion', err);
+        console.error('Upload failed with buffer conversion/drive transmission', err);
+        alert('Image upload failed. Please try a different photo format or check sync status.');
       } finally {
         setUploadingImage(false);
       }
     };
     reader.readAsDataURL(file);
+  };
+
+  // Directly upload a Base64 image from camera snapshot
+  const handleDirectBase64Upload = async (base64String: string, target: 'store' | 'prod') => {
+    setUploadingImage(true);
+    const filename = `camera-capture-${Date.now()}.jpg`;
+    try {
+      await performDriveOrLocalUpload(base64String, filename, target);
+    } catch (err) {
+      console.error('Direct camera data upload failed:', err);
+      alert('Camera captured photo upload failed.');
+    } finally {
+      setUploadingImage(false);
+    }
   };
 
   // Create store slug & persist record
@@ -620,26 +712,35 @@ export default function AdminPanel({ token, currentUser, activeTab: propActiveTa
       if (response.ok && resData.success) {
         const p = resData.product;
         setProdName(p.name);
-        setProdDesc(`Ingredients: ${p.ingredients}. ${p.description}`);
+        setProdDesc(p.description || '');
+        setProdIngredients(p.ingredients || '');
+        setProdCategory(p.category || '');
         setProdPrice(p.price.toString());
+        setScannedLocalPrice(p.localPrice ? p.localPrice.toString() : p.price.toString());
+        setScannedOnlinePrice(p.onlinePrice ? p.onlinePrice.toString() : p.price.toString());
+        setScannedIsOnlinePreferred(!!p.isOnlinePriceApplied);
         setProdStock('35'); // standard default starting stock
         
-        // Auto-select beautiful themed imagery based on category
-        const cat = (p.category || 'General').toLowerCase();
-        let selectedUrl = "https://images.unsplash.com/photo-1472851294608-062f824d29cc?q=80&w=800"; // General Retail
-        if (cat.includes('beverage') || cat.includes('coffee') || cat.includes('drink')) {
-          selectedUrl = "https://images.unsplash.com/photo-1541167760496-1628856ab772?q=80&w=800"; // Coffee
-        } else if (cat.includes('pastry') || cat.includes('croissant') || cat.includes('bakery') || cat.includes('cake') || cat.includes('cookie')) {
-          selectedUrl = "https://images.unsplash.com/photo-1555507036-ab1f4038808a?q=80&w=800"; // Bakery
-        } else if (cat.includes('apparel') || cat.includes('clothing') || cat.includes('jacket') || cat.includes('denim')) {
-          selectedUrl = "https://images.unsplash.com/photo-1551488831-00ddcb6c6bd3?q=80&w=800"; // Fashion/Denim
-        } else if (cat.includes('accessories') || cat.includes('wallet') || cat.includes('leather')) {
-          selectedUrl = "https://images.unsplash.com/photo-1441986300917-64674bd600d8?q=80&w=800"; // Accessories
-        } else if (cat.includes('beauty') || cat.includes('spa') || cat.includes('serum')) {
-          selectedUrl = "https://images.unsplash.com/photo-1608248597481-496100c80836?q=80&w=800"; // Beauty Serum
+        // Auto-select beautiful themed imagery based on category if there is no custom photoUrl
+        if (p.photoUrl) {
+          setProdImage(p.photoUrl);
+        } else {
+          const cat = (p.category || 'General').toLowerCase();
+          let selectedUrl = "https://images.unsplash.com/photo-1472851294608-062f824d29cc?q=80&w=800"; // General Retail
+          if (cat.includes('beverage') || cat.includes('coffee') || cat.includes('drink')) {
+            selectedUrl = "https://images.unsplash.com/photo-1541167760496-1628856ab772?q=80&w=800"; // Coffee
+          } else if (cat.includes('pastry') || cat.includes('croissant') || cat.includes('bakery') || cat.includes('cake') || cat.includes('cookie')) {
+            selectedUrl = "https://images.unsplash.com/photo-1555507036-ab1f4038808a?q=80&w=800"; // Bakery
+          } else if (cat.includes('apparel') || cat.includes('clothing') || cat.includes('jacket') || cat.includes('denim')) {
+            selectedUrl = "https://images.unsplash.com/photo-1551488831-00ddcb6c6bd3?q=80&w=800"; // Fashion/Denim
+          } else if (cat.includes('accessories') || cat.includes('wallet') || cat.includes('leather')) {
+            selectedUrl = "https://images.unsplash.com/photo-1441986300917-64674bd600d8?q=80&w=800"; // Accessories
+          } else if (cat.includes('beauty') || cat.includes('spa') || cat.includes('serum')) {
+            selectedUrl = "https://images.unsplash.com/photo-1608248597481-496100c80836?q=80&w=800"; // Beauty Serum
+          }
+          setProdImage(selectedUrl);
         }
-        setProdImage(selectedUrl);
-        setProdSuccess(`Scanned successfully! Populated product "${p.name}" via Gemini auto-synthesis.`);
+        setProdSuccess(`Scanned successfully! Populated product "${p.name}" details.`);
       } else {
         setProdError(resData.error || 'Failed to analyze barcode details.');
       }
@@ -667,7 +768,7 @@ export default function AdminPanel({ token, currentUser, activeTab: propActiveTa
       const method = editingProductId ? 'PUT' : 'POST';
       const endpoint = editingProductId ? `/api/products/${editingProductId}` : '/api/products';
 
-      const response = await fetch(endpoint, {
+       const response = await fetch(endpoint, {
         method,
         headers: {
           'Content-Type': 'application/json',
@@ -680,7 +781,9 @@ export default function AdminPanel({ token, currentUser, activeTab: propActiveTa
           price: Number(prodPrice),
           stock: Number(prodStock),
           imageUrl: prodImage,
-          barcode: prodBarcode
+          barcode: prodBarcode,
+          ingredients: prodIngredients,
+          category: prodCategory
         })
       });
 
@@ -696,6 +799,11 @@ export default function AdminPanel({ token, currentUser, activeTab: propActiveTa
       setProdStock('');
       setProdImage('');
       setProdBarcode('');
+      setProdIngredients('');
+      setProdCategory('');
+      setScannedLocalPrice('');
+      setScannedOnlinePrice('');
+      setScannedIsOnlinePreferred(false);
       setEditingProductId(null);
       await fetchAllData();
     } catch (err: any) {
@@ -712,6 +820,8 @@ export default function AdminPanel({ token, currentUser, activeTab: propActiveTa
     setProdStock(String(p.stock));
     setProdImage(p.imageUrl || '');
     setProdBarcode(p.barcode || '');
+    setProdIngredients(p.ingredients || '');
+    setProdCategory(p.category || '');
     setProdError(null);
     setProdSuccess(null);
     // Scroll smoothly to input editor if needed
@@ -793,13 +903,22 @@ export default function AdminPanel({ token, currentUser, activeTab: propActiveTa
     setPosError(null);
     setPosSuccess(null);
     
-    const storeIdToUse = currentUser.role === 'Master Admin' ? selectedCatalogStoreId : currentUser.storeId;
+    let storeIdToUse = currentUser.role === 'Master Admin' ? selectedCatalogStoreId : currentUser.storeId;
     if (!storeIdToUse) {
       setPosError('No active storefront bound to your staff account.');
       return;
     }
 
-    const matched = products.find(p => p.storeId === storeIdToUse && p.barcode === code);
+    let matched = products.find(p => p.storeId === storeIdToUse && p.barcode === code);
+    if (!matched && currentUser.role === 'Master Admin') {
+      const globalMatches = products.find(p => p.barcode === code);
+      if (globalMatches) {
+        setSelectedCatalogStoreId(globalMatches.storeId);
+        storeIdToUse = globalMatches.storeId;
+        matched = globalMatches;
+      }
+    }
+
     if (matched) {
       if (matched.stock <= 0) {
         setPosError(`"${matched.name}" matches barcode [${code}] but is completely out of stock!`);
@@ -1598,8 +1717,9 @@ This database package contains valid registered stock lists. Feel free to re-upl
                       onChange={(e) => setStorePhoto(e.target.value)}
                       className="w-full bg-slate-950 border border-slate-800 rounded-lg h-10 px-3 text-xs text-slate-200 outline-none focus:border-yellow-500"
                     />
-                    <label className="bg-slate-800 hover:bg-slate-700 h-10 px-3.5 flex items-center justify-center shrink-0 border border-slate-700 rounded-lg text-xs cursor-pointer text-slate-300">
+                    <label className="bg-slate-800 hover:bg-slate-700 h-10 px-3 flex items-center justify-center shrink-0 border border-slate-700 rounded-lg text-xs cursor-pointer text-slate-300 gap-1.5" title="Upload file from system">
                       <UploadCloud className="w-4 h-4" />
+                      <span className="hidden sm:inline">Upload</span>
                       <input
                         type="file"
                         accept="image/*"
@@ -1607,6 +1727,18 @@ This database package contains valid registered stock lists. Feel free to re-upl
                         className="hidden"
                       />
                     </label>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCameraTarget('store');
+                        setIsCameraCaptureOpen(true);
+                      }}
+                      className="bg-slate-800 hover:bg-slate-700 h-10 px-3 flex items-center justify-center shrink-0 border border-slate-700 rounded-lg text-xs cursor-pointer text-slate-300 gap-1.5 transition-colors"
+                      title="Take picture from Camera directly"
+                    >
+                      <Camera className="w-4 h-4" />
+                      <span className="hidden sm:inline">Camera</span>
+                    </button>
                   </div>
                 </div>
 
@@ -2217,6 +2349,29 @@ This database package contains valid registered stock lists. Feel free to re-upl
 
                   <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-1 block text-left">
+                      <label className="text-[10px] font-bold text-slate-400 tracking-wider uppercase block">Product Category</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. Beverages"
+                        value={prodCategory}
+                        onChange={(e) => setProdCategory(e.target.value)}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-lg h-10 px-3 text-xs text-slate-200 outline-none focus:border-yellow-500"
+                      />
+                    </div>
+                    <div className="space-y-1 block text-left">
+                      <label className="text-[10px] font-bold text-slate-400 tracking-wider uppercase block">Ingredients & Materials</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. Cocoa, Sugar, Butter"
+                        value={prodIngredients}
+                        onChange={(e) => setProdIngredients(e.target.value)}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-lg h-10 px-3 text-xs text-slate-200 outline-none focus:border-yellow-500"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1 block text-left">
                       <label className="text-[10px] font-bold text-slate-400 tracking-wider uppercase block">Base Price (€) *</label>
                       <input
                         type="number"
@@ -2241,6 +2396,52 @@ This database package contains valid registered stock lists. Feel free to re-upl
                     </div>
                   </div>
 
+                  {scannedOnlinePrice && (
+                    <div className="mt-2.5 p-3.5 bg-slate-950 border border-slate-800 rounded-xl space-y-2.5 text-left animate-fadeIn">
+                      <div className="flex justify-between items-center border-b border-slate-800 pb-1.5 animate-pulse">
+                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1.5">
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                          Global MSRP & Online Tracker
+                        </span>
+                        {scannedIsOnlinePreferred && (
+                          <span className="px-2 py-0.5 bg-yellow-500/10 border border-yellow-500/35 rounded text-[9px] font-bold text-yellow-400 uppercase tracking-wider">
+                            Higher Online Price Auto-Applied
+                          </span>
+                        )}
+                      </div>
+                      
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="p-2 bg-slate-900 border border-slate-800/40 rounded-lg">
+                          <p className="text-[9px] font-medium text-slate-500 uppercase tracking-wider">Standard Retail Price</p>
+                          <p className="text-sm font-extrabold text-slate-300 font-mono">€{scannedLocalPrice}</p>
+                          <button
+                            type="button"
+                            onClick={() => setProdPrice(scannedLocalPrice)}
+                            className="mt-1.5 text-[10px] text-yellow-500 hover:text-yellow-400 font-semibold cursor-pointer transition-colors"
+                          >
+                            Apply Standard
+                          </button>
+                        </div>
+
+                        <div className="p-2 bg-emerald-950/10 border border-emerald-900/20 rounded-lg">
+                          <p className="text-[9px] font-medium text-emerald-500 uppercase tracking-wider">Online Premium Delivery</p>
+                          <p className="text-sm font-extrabold text-emerald-400 font-mono">€{scannedOnlinePrice}</p>
+                          <button
+                            type="button"
+                            onClick={() => setProdPrice(scannedOnlinePrice)}
+                            className="mt-1.5 text-[10px] text-emerald-400 hover:text-emerald-300 font-semibold cursor-pointer transition-colors"
+                          >
+                            Apply Online Price
+                          </button>
+                        </div>
+                      </div>
+
+                      <p className="text-[10px] text-slate-400 leading-relaxed font-sans">
+                        Convenience surcharge is calculated based on logistics and high-speed distribution premiums. The catalog editor is locked to the <strong className="text-yellow-400">higher of the two</strong> by default to guarantee healthy margins.
+                      </p>
+                    </div>
+                  )}
+
                   <div className="space-y-1 block">
                     <span className="text-[10px] font-bold text-slate-400 tracking-wider uppercase block">Product Photo (S3 storagePut buffer)</span>
                     <div className="flex gap-2 items-center mt-1">
@@ -2251,16 +2452,54 @@ This database package contains valid registered stock lists. Feel free to re-upl
                         onChange={(e) => setProdImage(e.target.value)}
                         className="w-full bg-slate-950 border border-slate-800 rounded-lg h-10 px-3 text-xs text-slate-200 outline-none focus:border-yellow-500"
                       />
-                      <label className="bg-slate-800 hover:bg-slate-700 h-10 px-3.5 flex items-center justify-center shrink-0 border border-slate-700 rounded-lg text-xs cursor-pointer text-slate-300">
+                      <label className="bg-slate-800 hover:bg-slate-700 h-10 px-3 flex items-center justify-center shrink-0 border border-slate-700 rounded-lg text-xs cursor-pointer text-slate-300 gap-1.5" title="Upload file from system">
                         <UploadCloud className="w-4 h-4" />
+                        <span className="hidden sm:inline">Upload</span>
                         <input
-                          type="file"
-                          accept="image/*"
-                          onChange={(e) => handlePhotoUpload(e, 'prod')}
-                          className="hidden"
+                           type="file"
+                           accept="image/*"
+                           onChange={(e) => handlePhotoUpload(e, 'prod')}
+                           className="hidden"
                         />
                       </label>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCameraTarget('prod');
+                          setIsCameraCaptureOpen(true);
+                        }}
+                        className="bg-slate-800 hover:bg-slate-700 h-10 px-3 flex items-center justify-center shrink-0 border border-slate-700 rounded-lg text-xs cursor-pointer text-slate-300 gap-1.5 transition-colors"
+                        title="Take picture from Camera directly"
+                      >
+                        <Camera className="w-4 h-4" />
+                        <span className="hidden sm:inline">Camera</span>
+                      </button>
                     </div>
+
+                    {prodImage && (
+                      <div className="mt-2.5 p-2 bg-slate-950/70 border border-slate-800/80 rounded-lg flex items-center gap-3 animate-fadeIn">
+                        <img
+                          src={prodImage}
+                          alt="Product Preview"
+                          referrerPolicy="no-referrer"
+                          className="w-12 h-12 object-contain rounded-md border border-slate-300 bg-white p-1"
+                          onError={(e) => {
+                            (e.target as HTMLImageElement).src = "https://images.unsplash.com/photo-1472851294608-062f824d29cc?q=80&w=800";
+                          }}
+                        />
+                        <div className="flex-1 text-left min-w-0">
+                          <p className="text-[9px] font-bold text-emerald-400 uppercase tracking-widest font-mono">Image Source Populated</p>
+                          <p className="text-[10px] text-slate-300 truncate font-mono">{prodImage}</p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setProdImage('')}
+                          className="text-[10px] text-rose-400 hover:text-rose-300 font-semibold px-2.5 py-1 bg-rose-950/30 hover:bg-rose-950/60 rounded border border-rose-900/40 cursor-pointer transition-all"
+                        >
+                          Reset
+                        </button>
+                      </div>
+                    )}
                   </div>
 
                   <button
@@ -2282,6 +2521,11 @@ This database package contains valid registered stock lists. Feel free to re-upl
                         setProdStock('');
                         setProdImage('');
                         setProdBarcode('');
+                        setProdIngredients('');
+                        setProdCategory('');
+                        setScannedLocalPrice('');
+                        setScannedOnlinePrice('');
+                        setScannedIsOnlinePreferred(false);
                       }}
                       className="w-full bg-slate-800 hover:bg-slate-700 text-slate-300 h-10 rounded-lg text-xs font-semibold cursor-pointer"
                     >
@@ -2937,6 +3181,13 @@ This database package contains valid registered stock lists. Feel free to re-upl
         onClose={() => setIsPosScannerOpen(false)}
         onScanSuccess={handleDirectBarcodeScan}
         title="POS Selling Barcode Reader"
+      />
+
+      <CameraCaptureModal
+        isOpen={isCameraCaptureOpen}
+        onClose={() => setIsCameraCaptureOpen(false)}
+        onCaptureSuccess={(base64String) => handleDirectBase64Upload(base64String, cameraTarget)}
+        title={cameraTarget === 'store' ? "Capture Storefront Photo" : "Take Product Photo"}
       />
 
       {/* Editing User Override overlay modal */}

@@ -1,6 +1,7 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { User } from '../types.js';
-import { Save, Lock, Mail, Smartphone, UserCheck, MapPin, UploadCloud, Image as ImageIcon, Check, AlertCircle } from 'lucide-react';
+import { Save, Lock, Mail, Smartphone, UserCheck, MapPin, UploadCloud, Image as ImageIcon, Check, AlertCircle, Cloud } from 'lucide-react';
+import { googleSignIn, initAuth, logoutGoogle } from '../lib/driveAuth.js';
 
 interface SettingsPanelProps {
   user: User;
@@ -28,6 +29,222 @@ export default function SettingsPanel({ user, token, onProfileUpdated }: Setting
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
+
+  const [googleLoading, setGoogleLoading] = useState(false);
+
+  useEffect(() => {
+    initAuth(
+      (googleUser, googleToken) => {
+        // Token is automatically managed and cached in memory
+      },
+      () => {
+        // No active Google session
+      }
+    );
+  }, []);
+
+  const handleConnectGoogle = async () => {
+    setGoogleLoading(true);
+    setErrorMsg(null);
+    setSuccessMsg(null);
+    try {
+      const result = await googleSignIn();
+      if (result) {
+        const { user: gUser } = result;
+        const gEmail = (gUser.email || '').toLowerCase();
+
+        let currentAccounts = [...(user.googleDriveAccounts || [])];
+        if (user.googleDriveConnected && user.googleDriveEmail && !currentAccounts.some(a => a.email === user.googleDriveEmail.toLowerCase())) {
+          currentAccounts.push({ email: user.googleDriveEmail.toLowerCase(), isActive: true });
+        }
+
+        const exists = currentAccounts.find(a => a.email === gEmail);
+        if (!exists) {
+          currentAccounts.push({ email: gEmail, isActive: true });
+        } else {
+          exists.isActive = true;
+        }
+
+        const updatedAccounts = currentAccounts.map(acc => {
+          if (acc.email === gEmail) return { ...acc, isActive: true };
+          return acc;
+        });
+
+        const response = await fetch('/api/users/profile', {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({
+            username,
+            email,
+            phone,
+            gender,
+            googleDriveConnected: true,
+            googleDriveEmail: gEmail,
+            googleDriveAccounts: updatedAccounts
+          })
+        });
+
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.error || 'Failed to update Google Drive profile connection.');
+        }
+
+        onProfileUpdated(data.user);
+        setSuccessMsg(`Perfect! Connected Google Drive successfully to ${gEmail}! Product photos will auto-save to Drive.`);
+      }
+    } catch (err: any) {
+      console.error(err);
+      setErrorMsg(err.message || 'Failed connecting Google Drive account.');
+    } finally {
+      setGoogleLoading(false);
+    }
+  };
+
+  const handleToggleAccountActive = async (targetEmail: string) => {
+    setGoogleLoading(true);
+    setErrorMsg(null);
+    setSuccessMsg(null);
+    try {
+      let currentAccounts = [...(user.googleDriveAccounts || [])];
+      if (user.googleDriveConnected && user.googleDriveEmail && !currentAccounts.some(a => a.email === user.googleDriveEmail.toLowerCase())) {
+        currentAccounts.push({ email: user.googleDriveEmail.toLowerCase(), isActive: true });
+      }
+
+      const updatedAccounts = currentAccounts.map(acc => {
+        if (acc.email === targetEmail) {
+          return { ...acc, isActive: !acc.isActive };
+        }
+        return acc;
+      });
+
+      const firstActive = updatedAccounts.find(a => a.isActive);
+      const isConnected = !!firstActive;
+
+      const response = await fetch('/api/users/profile', {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          username,
+          email,
+          phone,
+          gender,
+          googleDriveConnected: isConnected,
+          googleDriveEmail: firstActive ? firstActive.email : '',
+          googleDriveAccounts: updatedAccounts
+        })
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to change action state.');
+      }
+
+      onProfileUpdated(data.user);
+      setSuccessMsg(`Updated sync state of ${targetEmail}!`);
+    } catch (err: any) {
+      console.error(err);
+      setErrorMsg(err.message || 'Error toggling storage sync email.');
+    } finally {
+      setGoogleLoading(false);
+    }
+  };
+
+  const handleRemoveAccount = async (targetEmail: string) => {
+    if (!window.confirm(`Are you sure you want to completely disconnect Google account: ${targetEmail}?`)) {
+      return;
+    }
+    setGoogleLoading(true);
+    setErrorMsg(null);
+    setSuccessMsg(null);
+    try {
+      let currentAccounts = [...(user.googleDriveAccounts || [])];
+      if (user.googleDriveConnected && user.googleDriveEmail && !currentAccounts.some(a => a.email === user.googleDriveEmail.toLowerCase())) {
+        currentAccounts.push({ email: user.googleDriveEmail.toLowerCase(), isActive: true });
+      }
+
+      const updatedAccounts = currentAccounts.filter(acc => acc.email !== targetEmail);
+      const firstActive = updatedAccounts.find(a => a.isActive);
+      const isConnected = updatedAccounts.length > 0;
+
+      const response = await fetch('/api/users/profile', {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          username,
+          email,
+          phone,
+          gender,
+          googleDriveConnected: isConnected,
+          googleDriveEmail: firstActive ? firstActive.email : (updatedAccounts[0]?.email || ''),
+          googleDriveAccounts: updatedAccounts
+        })
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to remove synced Google account.');
+      }
+
+      onProfileUpdated(data.user);
+      setSuccessMsg(`Successfully disconnected storage sync of ${targetEmail}!`);
+    } catch (err: any) {
+      console.error(err);
+      setErrorMsg(err.message || 'Error removing connected Google account.');
+    } finally {
+      setGoogleLoading(false);
+    }
+  };
+
+  const handleDisconnectGoogle = async () => {
+    if (!window.confirm("Are you sure you want to disconnect all Google Drive accounts completely? New products will use local fallback storage.")) {
+      return;
+    }
+    setGoogleLoading(true);
+    setErrorMsg(null);
+    setSuccessMsg(null);
+    try {
+      await logoutGoogle();
+      
+      const response = await fetch('/api/users/profile', {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          username,
+          email,
+          phone,
+          gender,
+          googleDriveConnected: false,
+          googleDriveEmail: '',
+          googleDriveAccounts: []
+        })
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to disconnect cloud accounts.');
+      }
+
+      onProfileUpdated(data.user);
+      setSuccessMsg(`Disconnected all Google Drive storage integrations completely.`);
+    } catch (err: any) {
+      console.error(err);
+      setErrorMsg(err.message || 'Error disconnecting cloud integration.');
+    } finally {
+      setGoogleLoading(false);
+    }
+  };
 
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -189,6 +406,125 @@ export default function SettingsPanel({ user, token, onProfileUpdated }: Setting
             </div>
           )}
         </div>
+
+        {['Master Admin', 'Admin', 'Store Owner'].includes(user.role) && (
+          <div className="bg-slate-950/70 p-5 border border-slate-800 rounded-xl mb-6 space-y-5 text-left">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-lg bg-yellow-500/15 border border-yellow-500/20 text-yellow-500 flex items-center justify-center">
+                <Cloud className="w-5 h-5 opacity-80" />
+              </div>
+              <div>
+                <h4 className="font-sans font-bold text-slate-200 text-sm">Google Drive Multi-Account Backup</h4>
+                <p className="text-[11px] text-slate-400">Sync multiple Google / Gmail accounts. Files will auto-upload to your Active accounts and automatically fall back to Standby accounts if one becomes full.</p>
+              </div>
+            </div>
+
+            {/* List of Connected Accounts */}
+            {(() => {
+              // Convert existing single accounts flags to list for compatibility
+              let accountsList = [...(user.googleDriveAccounts || [])];
+              if (user.googleDriveConnected && user.googleDriveEmail && !accountsList.some(a => a.email.toLowerCase() === user.googleDriveEmail.toLocaleLowerCase())) {
+                accountsList.push({ email: user.googleDriveEmail.toLowerCase(), isActive: true });
+              }
+
+              return (
+                <div className="space-y-3">
+                  {accountsList.length > 0 ? (
+                    <div className="divide-y divide-slate-800/80 border border-slate-800 rounded-xl overflow-hidden bg-slate-900/40">
+                      {accountsList.map((acc, index) => {
+                        const isPrimary = user.googleDriveEmail?.toLowerCase() === acc.email.toLowerCase();
+                        return (
+                          <div key={index} className="p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 transition-all hover:bg-slate-900/70">
+                            <div className="space-y-1">
+                              <div className="flex items-center gap-2">
+                                <span className="text-xs font-bold text-slate-200 font-mono text-left block truncate max-w-[200px] sm:max-w-xs">{acc.email}</span>
+                                {isPrimary && (
+                                  <span className="bg-yellow-500/10 text-yellow-400 border border-yellow-500/20 text-[9px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wider font-mono">
+                                    Primary Target
+                                  </span>
+                                )}
+                              </div>
+                              <p className="text-[10px] text-slate-500">
+                                {acc.isActive 
+                                  ? "🟢 Active. Products uploaded here render instantly globally." 
+                                  : "⚪ Standby. Used for automated instant backup failovers."
+                                }
+                              </p>
+                            </div>
+
+                            <div className="flex items-center gap-3.5 shrink-0">
+                              <button
+                                type="button"
+                                onClick={() => handleToggleAccountActive(acc.email)}
+                                className={`text-[10px] px-2.5 py-1.5 border rounded-lg font-bold uppercase tracking-wider font-mono cursor-pointer transition-all ${
+                                  acc.isActive 
+                                    ? "bg-emerald-500/10 hover:bg-emerald-500/25 text-emerald-400 border-emerald-500/20" 
+                                    : "bg-slate-800 hover:bg-slate-700 text-slate-400 border-slate-700/60"
+                                }`}
+                              >
+                                {acc.isActive ? "Active Sync Target" : "Standby Failover"}
+                              </button>
+                              
+                              <button
+                                type="button"
+                                disabled={googleLoading || accountsList.length <= 1}
+                                onClick={() => handleRemoveAccount(acc.email)}
+                                title={accountsList.length <= 1 ? "To disable sync entirely, disconnect below." : "Disconnect account"}
+                                className={`text-xs px-2.5 py-1.5 border rounded-lg font-bold uppercase tracking-wider transition-all ${
+                                  accountsList.length <= 1
+                                    ? "bg-slate-800/20 text-slate-600 border-slate-800/20 cursor-not-allowed"
+                                    : "bg-red-500/10 hover:bg-red-500/25 text-red-400 border-red-500/25 cursor-pointer"
+                                }`}
+                              >
+                                Remove
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div className="p-5 border border-dashed border-slate-800 rounded-xl text-center bg-slate-900/10 space-y-1.5">
+                      <p className="text-xs font-semibold text-slate-400 font-sans">No Backing Accounts Configured</p>
+                      <p className="text-[10px] text-slate-500 max-w-sm mx-auto">Products you post will temporarily upload to local storage. Link Google account to backup globally.</p>
+                    </div>
+                  )}
+
+                  {/* Operational Addition Controls */}
+                  <div className="pt-2 flex flex-col sm:flex-row gap-3 items-center justify-between border-t border-slate-800/60">
+                    <button
+                      type="button"
+                      disabled={googleLoading}
+                      onClick={handleConnectGoogle}
+                      className="w-full sm:w-auto bg-yellow-500 hover:bg-yellow-600 active:scale-95 text-slate-950 text-xs px-4 py-2.5 font-bold rounded-lg transition-all flex items-center justify-center gap-1.5 cursor-pointer uppercase tracking-wider font-mono shrink-0"
+                    >
+                      <Cloud className="w-4 h-4" />
+                      {googleLoading ? "Syncing..." : accountsList.length > 0 ? "+ Add another Google Sync Account" : "Link Google Account"}
+                    </button>
+
+                    {accountsList.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={handleDisconnectGoogle}
+                        className="text-[10px] hover:text-red-400 text-slate-500 uppercase tracking-widest font-bold font-mono transition-colors active:scale-95 cursor-pointer p-1"
+                      >
+                        Disconnect All Accounts
+                      </button>
+                    )}
+                  </div>
+
+                  {accountsList.length > 0 && (
+                    <div className="bg-slate-900/25 p-3.5 border border-yellow-500/10 rounded-lg">
+                      <p className="text-[10px] text-yellow-500/80 leading-normal">
+                        <strong>💡 Live Failover protection is active:</strong> If you upload product images and one linked Google Drive account has no space left or returns a storage error, our engine automatically detects it in real-time and will attempt backup copying to any other connected Standby failover account without blocking public shoppers.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+          </div>
+        )}
 
         <form onSubmit={handleSubmit} className="space-y-6">
           {/* Avatar Options */}

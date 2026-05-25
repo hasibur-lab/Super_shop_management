@@ -12,6 +12,14 @@ export interface User {
   gender?: 'Man' | 'Woman';
   deliveryLocation?: string; // Delivery lat/long or textual address description for sharing
   registrationDate: string;
+  googleDriveConnected?: boolean;
+  googleDriveEmail?: string;
+  googleDriveAccounts?: GoogleDriveAccount[];
+}
+
+export interface GoogleDriveAccount {
+  email: string;
+  isActive: boolean;
 }
 
 export interface Store {
