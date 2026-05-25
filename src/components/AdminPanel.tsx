@@ -204,6 +204,13 @@ export default function AdminPanel({ token, currentUser, activeTab: propActiveTa
     }
   };
 
+  // Multiple selection/bulk delete tracking states
+  const [selectedStoreIds, setSelectedStoreIds] = useState<string[]>([]);
+  const [selectedUserIds, setSelectedUserIds] = useState<string[]>([]);
+  const [selectedProductIds, setSelectedProductIds] = useState<string[]>([]);
+  const [selectedOrderIds, setSelectedOrderIds] = useState<string[]>([]);
+  const [shareSuccess, setShareSuccess] = useState<string | null>(null);
+
   const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(false);
   const [ordersFilterSubTab, setOrdersFilterSubTab] = useState<'all' | 'completed' | 'cancelled'>('all');
 
@@ -311,6 +318,210 @@ export default function AdminPanel({ token, currentUser, activeTab: propActiveTa
     setStorePhoto(store.photoUrl);
     setStoreFormError(null);
     setStoreFormSuccess(null);
+  };
+
+  const handleDeleteStore = async (storeId: string) => {
+    if (!window.confirm('Are you absolutely sure you want to remove this shop permanently? All associated products will be deleted as well.')) {
+      return;
+    }
+    setStoreFormError(null);
+    setStoreFormSuccess(null);
+    try {
+      const response = await fetch(`/api/admin/stores/${storeId}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to delete store.');
+      }
+      setStoreFormSuccess(data.message || 'Store deleted successfully.');
+      await fetchAllData();
+    } catch (err: any) {
+      setStoreFormError(err.message || 'Failed to delete store.');
+    }
+  };
+
+  const handleShareStore = (store: any) => {
+    try {
+      const origin = window.location.origin;
+      const path = window.location.pathname;
+      const url = `${origin}${path}#/store/${store.slug}?isolated=true`;
+      
+      navigator.clipboard.writeText(url).then(() => {
+        setShareSuccess(`Unique URL copied to clipboard: ${store.name}`);
+        setTimeout(() => setShareSuccess(null), 4000);
+      }).catch(err => {
+        setShareSuccess(`Share Link: ${url}`);
+        setTimeout(() => setShareSuccess(null), 8000);
+      });
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleDeleteUser = async (userId: string) => {
+    if (userId === currentUser.id) {
+      alert("Self deletion is not permitted.");
+      return;
+    }
+    if (!window.confirm("Are you absolutely sure you want to delete this user permanently? This will remove their credentials and database record.")) {
+      return;
+    }
+    try {
+      const res = await fetch(`/api/admin/users/${userId}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setBackupSuccess(data.message || 'User deleted successfully.');
+        await fetchAllData();
+      } else {
+        setBackupError(data.error || 'Failed to delete user.');
+      }
+    } catch (err: any) {
+      setBackupError(err.message || 'Error occurred while deleting user.');
+    }
+  };
+
+  const handleDeleteOrder = async (orderId: string) => {
+    if (!window.confirm("Are you absolutely sure you want to remove this order from history?")) {
+      return;
+    }
+    try {
+      const res = await fetch(`/api/orders/${orderId}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      const data = await res.json();
+      if (res.ok) {
+        await fetchAllData();
+      } else {
+        alert(data.error || 'Failed to delete order.');
+      }
+    } catch (err: any) {
+      alert(err.message || 'Error deleting order.');
+    }
+  };
+
+  const handleBulkDeleteStores = async () => {
+    if (selectedStoreIds.length === 0) return;
+    if (!window.confirm(`Are you absolutely sure you want to delete the ${selectedStoreIds.length} selected store(s)? This will also delete all of their mapped products and unbind staff.`)) {
+      return;
+    }
+    try {
+      setStoreFormError(null);
+      setStoreFormSuccess(null);
+      const res = await fetch('/api/admin/stores/bulk-delete', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ ids: selectedStoreIds })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setStoreFormSuccess(data.message || 'Stores deleted successfully.');
+        setSelectedStoreIds([]);
+        await fetchAllData();
+      } else {
+        setStoreFormError(data.error || 'Bulk store deletion rejected.');
+      }
+    } catch (err: any) {
+      setStoreFormError(err.message || 'Error during-bulk delete.');
+    }
+  };
+
+  const handleBulkDeleteUsers = async () => {
+    const cleanIds = selectedUserIds.filter(id => id !== currentUser.id && id !== 'admin-hasib');
+    if (cleanIds.length === 0) {
+      alert("No valid user selection to delete (you cannot delete yourself or the main admin).");
+      return;
+    }
+    if (!window.confirm(`Are you absolutely sure you want to delete the ${cleanIds.length} selected user account(s) permanently?`)) {
+      return;
+    }
+    try {
+      setBackupError(null);
+      setBackupSuccess(null);
+      const res = await fetch('/api/admin/users/bulk-delete', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ ids: cleanIds })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setBackupSuccess(data.message || 'Selected users deleted successfully.');
+        setSelectedUserIds([]);
+        await fetchAllData();
+      } else {
+        setBackupError(data.error || 'Bulk user deletion rejected.');
+      }
+    } catch (err: any) {
+      setBackupError(err.message || 'Error deleting selected users.');
+    }
+  };
+
+  const handleBulkDeleteProducts = async () => {
+    if (selectedProductIds.length === 0) return;
+    if (!window.confirm(`Are you sure you want to delete the ${selectedProductIds.length} selected catalogue items permanently?`)) {
+      return;
+    }
+    try {
+      setProdError(null);
+      setProdSuccess(null);
+      const res = await fetch('/api/products/bulk-delete', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ ids: selectedProductIds })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setProdSuccess(data.message || 'Selected products deleted.');
+        setSelectedProductIds([]);
+        await fetchAllData();
+      } else {
+        setProdError(data.error || 'Bulk delete failed.');
+      }
+    } catch (err: any) {
+      setProdError(err.message || 'Error bulk deleting products.');
+    }
+  };
+
+  const handleBulkDeleteOrders = async () => {
+    if (selectedOrderIds.length === 0) return;
+    if (!window.confirm(`Are you absolutely sure you want to delete the ${selectedOrderIds.length} selected order(s) permanently?`)) {
+      return;
+    }
+    try {
+      const res = await fetch('/api/orders/bulk-delete', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ ids: selectedOrderIds })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setSelectedOrderIds([]);
+        await fetchAllData();
+      } else {
+        alert(data.error || 'Bulk order deletion failed.');
+      }
+    } catch (err: any) {
+      alert(err.message || 'Error occurred during bulk order deletion.');
+    }
   };
 
   // User to Store workplace bounds mappings
@@ -1428,19 +1639,82 @@ This database package contains valid registered stock lists. Feel free to re-upl
 
             {/* Configured stores grid list */}
             <div className="lg:col-span-2 bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl space-y-4">
-              <h4 className="font-sans font-bold text-white text-md border-b border-slate-800 pb-3 flex items-center gap-2">
-                <StoreIcon className="w-4 h-4 text-yellow-500" />
-                Active Stores List ({stores.length})
+              <h4 className="font-sans font-bold text-white text-md border-b border-slate-800 pb-3 flex items-center justify-between">
+                <span className="flex items-center gap-2">
+                  <StoreIcon className="w-4 h-4 text-yellow-500" />
+                  Active Stores List ({stores.length})
+                </span>
+                {currentUser.role === 'Master Admin' && stores.length > 0 && (
+                  <span className="text-[10px] font-mono text-slate-400">
+                    Selection supported
+                  </span>
+                )}
               </h4>
+
+              {shareSuccess && (
+                <div className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 p-3 rounded-xl text-xs font-semibold flex items-center justify-between">
+                  <span>{shareSuccess}</span>
+                  <button onClick={() => setShareSuccess(null)} className="text-slate-400 hover:text-white cursor-pointer select-none px-1">✕</button>
+                </div>
+              )}
+
+              {currentUser.role === 'Master Admin' && stores.length > 0 && (
+                <div className="bg-slate-950/40 border border-slate-800 rounded-xl p-3 flex flex-wrap items-center justify-between gap-3 text-xs text-left">
+                  <div className="flex items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (selectedStoreIds.length === stores.length) {
+                          setSelectedStoreIds([]);
+                        } else {
+                          setSelectedStoreIds(stores.map(s => s.id));
+                        }
+                      }}
+                      className="bg-slate-800 hover:bg-slate-750 text-slate-300 px-3 py-1.5 rounded-lg border border-slate-705 transition cursor-pointer font-semibold"
+                    >
+                      {selectedStoreIds.length === stores.length ? 'Deselect All' : 'Select All'}
+                    </button>
+                    <span className="text-slate-400 font-mono">
+                      Selected: <strong className="text-yellow-500">{selectedStoreIds.length}</strong> of {stores.length}
+                    </span>
+                  </div>
+                  {selectedStoreIds.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={handleBulkDeleteStores}
+                      className="bg-rose-500 hover:bg-rose-600 text-white font-bold px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition shadow cursor-pointer text-xs"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      Delete Selected ({selectedStoreIds.length})
+                    </button>
+                  )}
+                </div>
+              )}
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {stores.map((s) => (
                   <div key={s.id} className="bg-slate-950/80 border border-slate-850 rounded-xl overflow-hidden shadow-md flex flex-col justify-between">
-                    <div className="aspect-video w-full relative bg-slate-900">
-                      <img src={s.photoUrl} alt={s.name} className="w-full h-full object-cover" />
+                    <div className="aspect-video w-full relative bg-slate-900 animate-fade-in">
+                      <img src={s.photoUrl} alt={s.name} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
                       <div className="absolute top-2 left-2 bg-slate-950/80 backdrop-blur px-2.5 py-0.5 rounded text-[10px] font-mono font-bold text-yellow-500 border border-white/5">
                         {`/store/${s.slug}`}
                       </div>
+                      {currentUser.role === 'Master Admin' && (
+                        <div className="absolute top-2 right-2 bg-slate-950/80 backdrop-blur p-1.5 rounded-lg border border-white/10 flex items-center justify-center">
+                          <input
+                            type="checkbox"
+                            checked={selectedStoreIds.includes(s.id)}
+                            onChange={(e) => {
+                              if (e.target.checked) {
+                                setSelectedStoreIds(prev => [...prev, s.id]);
+                              } else {
+                                setSelectedStoreIds(prev => prev.filter(id => id !== s.id));
+                              }
+                            }}
+                            className="w-4 h-4 rounded text-yellow-500 bg-slate-900 border-slate-700 focus:ring-yellow-500 cursor-pointer accent-yellow-500"
+                          />
+                        </div>
+                      )}
                     </div>
                     <div className="p-4 space-y-2 text-left">
                       <h5 className="font-sans font-black text-white text-md tracking-tight leading-none">{s.name}</h5>
@@ -1459,13 +1733,31 @@ This database package contains valid registered stock lists. Feel free to re-upl
                         </p>
                       </div>
                     </div>
-                    <div className="p-3 bg-slate-900/40 border-t border-slate-850 flex justify-end">
+                    <div className="p-3 bg-slate-900/40 border-t border-slate-850 flex justify-end gap-1.5 flex-wrap">
+                      <button
+                        onClick={() => handleShareStore(s)}
+                        className="bg-sky-500/10 hover:bg-sky-500/25 text-sky-400 border border-sky-500/30 px-2.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1 transition-all cursor-pointer"
+                        title="Copy unique URL for store login/view details"
+                      >
+                        <svg className="w-3.5 h-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M8.684 10.742l4.622-2.311m0 0a3 3 0 10-2.671-3.672L6.152 7.07a3 3 0 100 3.86l4.483 2.241a3 3 0 11-2.485 3.565" />
+                        </svg>
+                        Share
+                      </button>
                       <button
                         onClick={() => startEditStore(s)}
-                        className="bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1"
+                        className="bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 px-2.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1 transition-all cursor-pointer"
                       >
                         <Edit className="w-3 h-3 text-yellow-500" />
-                        Modify Properties
+                        Modify
+                      </button>
+                      <button
+                        onClick={() => handleDeleteStore(s.id)}
+                        className="bg-rose-500/10 hover:bg-rose-500/25 text-rose-400 border border-rose-500/35 px-2.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1 transition-all cursor-pointer"
+                        title="Delete Store and products"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                        Delete
                       </button>
                     </div>
                   </div>
@@ -1593,15 +1885,58 @@ This database package contains valid registered stock lists. Feel free to re-upl
             </div>
 
               {/* Email lookup search container bar */}
-              <div className="relative">
-                <Search className="absolute left-3.5 top-3 w-4 h-4 text-slate-500" />
-                <input
-                  type="text"
-                  placeholder="🔍 Search users directory by email address..."
-                  value={userSearchEmail}
-                  onChange={(e) => setUserSearchEmail(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 hover:border-slate-700 focus:border-yellow-500 rounded-xl h-10 pl-10 pr-4 text-xs text-slate-200 outline-none transition-all"
-                />
+              <div className="space-y-3">
+                <div className="relative">
+                  <Search className="absolute left-3.5 top-3 w-4 h-4 text-slate-500" />
+                  <input
+                    type="text"
+                    placeholder="🔍 Search users directory by email address..."
+                    value={userSearchEmail}
+                    onChange={(e) => setUserSearchEmail(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 hover:border-slate-700 focus:border-yellow-500 rounded-xl h-10 pl-10 pr-4 text-xs text-slate-200 outline-none transition-all"
+                  />
+                </div>
+
+                {/* Bulk delete controls for users */}
+                {(() => {
+                  const visibleUsers = users.filter((u) => {
+                    if (u.role === 'Master Admin') return false;
+                    const emailInput = userSearchEmail.toLowerCase().trim();
+                    if (emailInput && !u.email.toLowerCase().includes(emailInput)) {
+                      return false;
+                    }
+                    const isStaff = u.role !== 'Customer';
+                    return usersSubTab === 'staff' ? isStaff : !isStaff;
+                  });
+
+                  if (visibleUsers.length > 0 && selectedUserIds.length > 0) {
+                    return (
+                      <div className="bg-slate-950/40 border border-slate-800 rounded-xl p-3 flex flex-wrap items-center justify-between gap-3 text-xs text-left animate-fade-in">
+                        <span className="text-slate-400 font-mono">
+                          Selected accounts: <strong className="text-yellow-500">{selectedUserIds.length}</strong> user(s) selected for bulk delete.
+                        </span>
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setSelectedUserIds([])}
+                            className="bg-slate-800 hover:bg-slate-755 text-slate-300 px-3 py-1.5 rounded-lg border border-slate-700 cursor-pointer font-bold transition"
+                          >
+                            Deselect
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleBulkDeleteUsers}
+                            className="bg-rose-500 hover:bg-rose-600 text-white font-bold px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition shadow cursor-pointer"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            Delete Selected ({selectedUserIds.length})
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  }
+                  return null;
+                })()}
               </div>
 
               {/* Users table registry container */}
@@ -1609,6 +1944,39 @@ This database package contains valid registered stock lists. Feel free to re-upl
                 <table className="w-full text-left text-xs text-slate-300">
                   <thead>
                     <tr className="border-b border-slate-800 text-slate-500 font-semibold uppercase tracking-wider text-[10px]">
+                      <th className="py-3 px-3 w-10">
+                        {(() => {
+                          const visibleUsers = users.filter((u) => {
+                            if (u.role === 'Master Admin') return false;
+                            const emailInput = userSearchEmail.toLowerCase().trim();
+                            if (emailInput && !u.email.toLowerCase().includes(emailInput)) {
+                              return false;
+                            }
+                            const isStaff = u.role !== 'Customer';
+                            return usersSubTab === 'staff' ? isStaff : !isStaff;
+                          });
+
+                          const selectableUsers = visibleUsers.filter(u => u.id !== currentUser.id && u.id !== 'admin-hasib');
+
+                          return (
+                            <input
+                              type="checkbox"
+                              checked={selectableUsers.length > 0 && selectableUsers.every(u => selectedUserIds.includes(u.id))}
+                              onChange={(e) => {
+                                if (e.target.checked) {
+                                  setSelectedUserIds(prev => {
+                                    const next = new Set([...prev, ...selectableUsers.map(u => u.id)]);
+                                    return Array.from(next);
+                                  });
+                                } else {
+                                  setSelectedUserIds(prev => prev.filter(id => !selectableUsers.some(su => su.id === id)));
+                                }
+                              }}
+                              className="w-4 h-4 rounded text-yellow-500 bg-slate-900 border-slate-700 cursor-pointer accent-yellow-500"
+                            />
+                          );
+                        })()}
+                      </th>
                       <th className="py-3 px-3">Profile Identity</th>
                       <th className="py-3 px-3">Gender / Tel</th>
                       <th className="py-3 px-3">Role Type</th>
@@ -1634,8 +2002,23 @@ This database package contains valid registered stock lists. Feel free to re-upl
                       .map((u) => (
                         <tr key={u.id} className="hover:bg-slate-950/25 transition-colors">
                           <td className="py-3.5 px-3">
+                            <input
+                              type="checkbox"
+                              checked={selectedUserIds.includes(u.id)}
+                              disabled={u.id === currentUser.id}
+                              onChange={(e) => {
+                                if (e.target.checked) {
+                                  setSelectedUserIds(prev => [...prev, u.id]);
+                                } else {
+                                  setSelectedUserIds(prev => prev.filter(id => id !== u.id));
+                                }
+                              }}
+                              className="w-4 h-4 rounded text-yellow-500 bg-slate-900 border-slate-700 cursor-pointer accent-yellow-500 disabled:opacity-30 disabled:cursor-not-allowed"
+                            />
+                          </td>
+                          <td className="py-3.5 px-3">
                             <div className="flex items-center gap-3">
-                              <img src={u.avatar} alt={u.username} className="w-9 h-9 rounded-full object-cover border border-slate-800 bg-slate-950" />
+                              <img src={u.avatar} alt={u.username} className="w-9 h-9 rounded-full object-cover border border-slate-800 bg-slate-950" referrerPolicy="no-referrer" />
                               <div>
                                 <p className="font-bold text-slate-100 flex items-center gap-1.5">
                                   <span>{u.username}</span>
@@ -1700,13 +2083,25 @@ This database package contains valid registered stock lists. Feel free to re-upl
                             )}
                           </td>
                           <td className="py-3.5 px-3 text-right">
-                            <button
-                              onClick={() => handleEditUserClick(u)}
-                              className="bg-slate-950 text-yellow-500 hover:text-slate-950 hover:bg-yellow-500 border border-yellow-500/15 text-[11px] font-bold px-3 py-1.5 rounded-lg transition-all flex items-center gap-1 justify-center ml-auto cursor-pointer"
-                            >
-                              <Edit className="w-3 h-3" />
-                              <span>Override Credentials</span>
-                            </button>
+                            <div className="flex items-center gap-1.5 justify-end">
+                              <button
+                                onClick={() => handleEditUserClick(u)}
+                                className="bg-slate-950 text-yellow-500 hover:text-slate-950 hover:bg-yellow-500 border border-yellow-500/15 text-[11px] font-bold px-3 py-1.5 rounded-lg transition-all flex items-center gap-1 justify-center cursor-pointer"
+                              >
+                                <Edit className="w-3.5 h-3.5" />
+                                <span>Modify</span>
+                              </button>
+                              {u.id !== currentUser.id && u.id !== 'admin-hasib' && (
+                                <button
+                                  onClick={() => handleDeleteUser(u.id)}
+                                  className="bg-rose-500/10 hover:bg-rose-500 hover:text-white text-rose-400 border border-rose-500/20 text-[11px] font-bold px-3 py-1.5 rounded-lg transition-all flex items-center gap-1.5 justify-center cursor-pointer"
+                                  title="Delete User permanently"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                  <span>Remove</span>
+                                </button>
+                              )}
+                            </div>
                           </td>
                         </tr>
                       ))}
@@ -1719,7 +2114,7 @@ This database package contains valid registered stock lists. Feel free to re-upl
                       return usersSubTab === 'staff' ? isStaff : !isStaff;
                     }).length === 0 && (
                       <tr>
-                        <td colSpan={5} className="py-10 text-center italic text-slate-500">
+                        <td colSpan={6} className="py-10 text-center italic text-slate-500">
                           No customized record lists found in registry matching filters.
                         </td>
                       </tr>
@@ -1959,6 +2354,46 @@ This database package contains valid registered stock lists. Feel free to re-upl
                 </div>
               )}
 
+              {/* Bulk product controls */}
+              {(() => {
+                const visibleProducts = products.filter(p => currentUser.role === 'Master Admin' || p.storeId === currentUser.storeId);
+                if (visibleProducts.length > 0) {
+                  return (
+                    <div className="bg-slate-950/40 border border-slate-800 rounded-xl p-3 flex flex-wrap items-center justify-between gap-3 text-xs text-left animate-fade-in">
+                      <div className="flex items-center gap-3">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (selectedProductIds.length === visibleProducts.length) {
+                              setSelectedProductIds([]);
+                            } else {
+                              setSelectedProductIds(visibleProducts.map(p => p.id));
+                            }
+                          }}
+                          className="bg-slate-800 hover:bg-slate-755 text-slate-300 px-3 py-1.5 rounded-lg border border-slate-705 transition cursor-pointer font-bold"
+                        >
+                          {selectedProductIds.length === visibleProducts.length ? 'Deselect All Products' : 'Select All Products'}
+                        </button>
+                        <span className="text-slate-400 font-mono">
+                          Selected products: <strong className="text-yellow-500">{selectedProductIds.length}</strong> of {visibleProducts.length}
+                        </span>
+                      </div>
+                      {selectedProductIds.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={handleBulkDeleteProducts}
+                          className="bg-rose-500 hover:bg-rose-600 text-white font-bold px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition shadow cursor-pointer text-xs"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          Delete Selected ({selectedProductIds.length})
+                        </button>
+                      )}
+                    </div>
+                  );
+                }
+                return null;
+              })()}
+
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {products.filter(p => currentUser.role === 'Master Admin' || p.storeId === currentUser.storeId).map((p) => {
                   const isLowStock = p.stock < lowStockThreshold;
@@ -1972,10 +2407,26 @@ This database package contains valid registered stock lists. Feel free to re-upl
                       }`}
                     >
                       <div className="flex items-center gap-3 min-w-0">
-                        <img src={p.imageUrl} alt={p.name} className="w-14 h-14 object-cover rounded-lg bg-slate-900 shrink-0 border border-white/5" />
+                        <div className="relative shrink-0">
+                          <img src={p.imageUrl} alt={p.name} className="w-14 h-14 object-cover rounded-lg bg-slate-900 border border-white/5" referrerPolicy="no-referrer" />
+                          <div className="absolute -top-1.5 -left-1.5 bg-slate-950/90 backdrop-blur rounded p-1 border border-white/10 flex items-center justify-center shadow">
+                            <input
+                              type="checkbox"
+                              checked={selectedProductIds.includes(p.id)}
+                              onChange={(e) => {
+                                if (e.target.checked) {
+                                  setSelectedProductIds(prev => [...prev, p.id]);
+                                } else {
+                                  setSelectedProductIds(prev => prev.filter(id => id !== p.id));
+                                }
+                              }}
+                              className="w-3.5 h-3.5 rounded text-yellow-500 bg-slate-900 border-slate-705 cursor-pointer accent-yellow-500"
+                            />
+                          </div>
+                        </div>
                         <div className="min-w-0 text-left">
                           <p className="text-xs font-bold text-slate-200 truncate leading-normal">{p.name}</p>
-                          <p className="text-[10px] text-slate-500 uppercase tracking-widest font-mono font-bold">{stores.find(s => s.id === p.storeId)?.name || 'Store Catalog'}</p>
+                          <p className="text-[10px] text-slate-500 uppercase tracking-widest font-mono font-bold font-sans">{stores.find(s => s.id === p.storeId)?.name || 'Store Catalog'}</p>
                           <div className="flex flex-wrap items-center gap-2 mt-1 font-mono text-[11px]">
                             <p className="text-yellow-500 font-bold font-mono">€{p.price.toFixed(2)}</p>
                             <p className={`${isLowStock ? 'text-rose-400 font-extrabold animate-pulse' : 'text-slate-405'}`}>
@@ -1998,14 +2449,14 @@ This database package contains valid registered stock lists. Feel free to re-upl
                       <div className="flex flex-col gap-1 shrink-0">
                         <button
                           onClick={() => startEditProduct(p)}
-                          className="p-1 px-2 bg-slate-900 hover:bg-slate-800 text-yellow-500 rounded text-[10px] uppercase font-bold flex items-center gap-1 cursor-pointer transition-colors"
+                          className="p-1 px-2 bg-slate-900 hover:bg-slate-805 text-yellow-500 rounded text-[10px] uppercase font-bold flex items-center gap-1 cursor-pointer transition-colors border border-slate-800"
                           title="Edit Item"
                         >
                           <Edit className="w-3 h-3" />
                         </button>
                         <button
                           onClick={() => handleDeleteProduct(p.id)}
-                          className="p-1 px-2 bg-slate-900 hover:bg-slate-800 text-red-400 rounded text-[10px] uppercase font-bold flex items-center gap-1 cursor-pointer transition-colors"
+                          className="p-1 px-2 bg-slate-900 hover:bg-slate-805 text-red-100 rounded text-[10px] uppercase font-bold flex items-center gap-1 cursor-pointer transition-colors border border-slate-800 hover:text-red-400"
                           title="Delete Item"
                         >
                           <Trash2 className="w-3 h-3" />
@@ -2215,9 +2666,10 @@ This database package contains valid registered stock lists. Feel free to re-upl
                   No order records exist matching the {ordersFilterSubTab === 'completed' ? 'Completed (Last 24 Hours)' : ordersFilterSubTab === 'cancelled' ? 'Cancelled' : 'Active'} category queue limits.
                 </p>
               ) : (
-                <div className="space-y-4 max-h-[600px] overflow-y-auto pr-1">
-                  {orders
-                    .filter((o) => {
+                <div className="space-y-4">
+                  {/* Bulk delete bar for Orders */}
+                  {(() => {
+                    const visibleOrders = orders.filter((o) => {
                       if (currentUser.role !== 'Master Admin' && currentUser.storeId !== o.storeId) {
                         return false;
                       }
@@ -2231,86 +2683,164 @@ This database package contains valid registered stock lists. Feel free to re-upl
                       } else {
                         return o.status === 'Cancelled';
                       }
-                    })
-                    .map((o) => (
-                      <div key={o.id} className="bg-slate-950 border border-slate-850 p-5 rounded-xl space-y-4 shadow-sm transition-all">
-                        <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-4">
-                          <div className="space-y-2 flex-1 min-w-0">
-                            <div className="flex flex-wrap items-center gap-2.5">
-                              <span className="font-mono text-yellow-500 font-bold">#{o.id.slice(-6).toUpperCase()}</span>
-                              <span className={`px-2 py-0.5 rounded text-[10px] font-bold font-mono ${
-                                o.status === 'Pending' ? 'bg-amber-900/35 text-amber-400 border border-amber-800/40' :
-                                o.status === 'Confirmed' ? 'bg-sky-950 text-sky-400 border border-sky-850' :
-                                o.status === 'Preparing' ? 'bg-indigo-950 text-indigo-400 border border-indigo-850' :
-                                o.status === 'Ready' ? 'bg-purple-950 text-purple-400 border border-purple-850' :
-                                o.status === 'Completed' ? 'bg-emerald-950 text-emerald-400 border border-emerald-850' :
-                                'bg-red-950 text-red-400 border border-red-850'
-                              }`}>
-                                {o.status}
-                              </span>
-                              <span className="text-[10px] bg-slate-900 px-2 py-0.5 rounded text-indigo-300 font-mono">
-                                {o.type} ({o.timeSlot})
-                              </span>
-                              {o.completedAt && (
-                                <span className="text-[9px] text-emerald-450 font-mono">
-                                  ✓ Completed At: {new Date(o.completedAt).toLocaleTimeString()}
+                    });
+
+                    if (visibleOrders.length > 0) {
+                      return (
+                        <div className="bg-slate-950/40 border border-slate-800 rounded-xl p-3 flex flex-wrap items-center justify-between gap-3 text-xs text-left animate-fade-in shadow-inner">
+                          <div className="flex items-center gap-3">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (selectedOrderIds.length === visibleOrders.length) {
+                                  setSelectedOrderIds([]);
+                                } else {
+                                  setSelectedOrderIds(visibleOrders.map(o => o.id));
+                                }
+                              }}
+                              className="bg-slate-805 hover:bg-slate-750 text-slate-300 px-3 py-1.5 rounded-lg border border-slate-700 transition cursor-pointer font-bold"
+                            >
+                              {selectedOrderIds.length === visibleOrders.length ? 'Deselect All Orders' : 'Select All Orders'}
+                            </button>
+                            <span className="text-slate-400 font-mono">
+                              Selected Orders: <strong className="text-yellow-500">{selectedOrderIds.length}</strong> of {visibleOrders.length}
+                            </span>
+                          </div>
+                          {selectedOrderIds.length > 0 && (
+                            <button
+                              type="button"
+                              onClick={handleBulkDeleteOrders}
+                              className="bg-rose-500 hover:bg-rose-600 text-white font-bold px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition shadow cursor-pointer text-xs"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                              Delete Selected ({selectedOrderIds.length})
+                            </button>
+                          )}
+                        </div>
+                      );
+                    }
+                    return null;
+                  })()}
+
+                  <div className="space-y-4 max-h-[600px] overflow-y-auto pr-1">
+                    {orders
+                      .filter((o) => {
+                        if (currentUser.role !== 'Master Admin' && currentUser.storeId !== o.storeId) {
+                          return false;
+                        }
+                        if (ordersFilterSubTab === 'all') {
+                          return o.status !== 'Completed' && o.status !== 'Cancelled';
+                        } else if (ordersFilterSubTab === 'completed') {
+                          if (o.status !== 'Completed') return false;
+                          if (!o.completedAt) return true;
+                          const completedTime = new Date(o.completedAt).getTime();
+                          return Date.now() - completedTime < 24 * 60 * 60 * 1000;
+                        } else {
+                          return o.status === 'Cancelled';
+                        }
+                      })
+                      .map((o) => (
+                        <div key={o.id} className="bg-slate-950 border border-slate-850 p-5 rounded-xl space-y-4 shadow-sm transition-all relative">
+                          <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-4">
+                            <div className="space-y-2 flex-1 min-w-0">
+                              <div className="flex flex-wrap items-center gap-2.5">
+                                <input
+                                  type="checkbox"
+                                  checked={selectedOrderIds.includes(o.id)}
+                                  onChange={(e) => {
+                                    if (e.target.checked) {
+                                      setSelectedOrderIds(prev => [...prev, o.id]);
+                                    } else {
+                                      setSelectedOrderIds(prev => prev.filter(id => id !== o.id));
+                                    }
+                                  }}
+                                  className="w-4 h-4 rounded text-yellow-500 bg-slate-900 border-slate-700 cursor-pointer accent-yellow-500 shrink-0"
+                                />
+                                <span className="font-mono text-yellow-500 font-bold">#{o.id.slice(-6).toUpperCase()}</span>
+                                <span className={`px-2 py-0.5 rounded text-[10px] font-bold font-mono ${
+                                  o.status === 'Pending' ? 'bg-amber-900/35 text-amber-400 border border-amber-800/40' :
+                                  o.status === 'Confirmed' ? 'bg-sky-950 text-sky-400 border border-sky-850' :
+                                  o.status === 'Preparing' ? 'bg-indigo-950 text-indigo-400 border border-indigo-850' :
+                                  o.status === 'Ready' ? 'bg-purple-950 text-purple-400 border border-purple-850' :
+                                  o.status === 'Completed' ? 'bg-emerald-950 text-emerald-400 border border-emerald-850' :
+                                  'bg-red-950 text-red-400 border border-red-850'
+                                }`}>
+                                  {o.status}
                                 </span>
+                                <span className="text-[10px] bg-slate-900 px-2 py-0.5 rounded text-indigo-300 font-mono">
+                                  {o.type} ({o.timeSlot})
+                                </span>
+                                {o.completedAt && (
+                                  <span className="text-[9px] text-emerald-450 font-mono">
+                                    ✓ Completed At: {new Date(o.completedAt).toLocaleTimeString()}
+                                  </span>
+                                )}
+                              </div>
+                              
+                              <div className="space-y-1">
+                                <p className="text-xs font-bold text-slate-250">Customer: {o.customerName} ({o.customerPhone})</p>
+                                {o.type === 'Delivery' && <p className="text-[11px] text-slate-400 font-sans">Address Location: {o.deliveryAddress}</p>}
+                              </div>
+  
+                              <div className="border-t border-slate-900 pt-2 space-y-1">
+                                {o.items.map((item, idx) => (
+                                  <p key={idx} className="text-[11px] text-slate-300 font-mono">
+                                    {item.name} x {item.quantity} (unit price: €{item.price.toFixed(2)})
+                                  </p>
+                                ))}
+                                <p className="text-xs font-bold text-yellow-500 font-mono mt-1">Total Paid Value: €{o.totalPrice.toFixed(2)}</p>
+                              </div>
+  
+                              {/* delivery confirmation profile */}
+                              {o.deliveryConfirmationImage && (
+                                <div className="pt-2">
+                                  <span className="text-[10px] text-slate-500 font-mono uppercase block mb-1">Delivery Drop Photo Profile</span>
+                                  <img src={o.deliveryConfirmationImage} alt="Delivery Drop Confirmation" className="w-16 h-16 object-cover bg-slate-900 rounded border border-white/5" referrerPolicy="no-referrer" />
+                                </div>
                               )}
                             </div>
-                            
-                            <div className="space-y-1">
-                              <p className="text-xs font-bold text-slate-250">Customer: {o.customerName} ({o.customerPhone})</p>
-                              {o.type === 'Delivery' && <p className="text-[11px] text-slate-400">Address Location: {o.deliveryAddress}</p>}
-                            </div>
-
-                            <div className="border-t border-slate-900 pt-2 space-y-1">
-                              {o.items.map((item, idx) => (
-                                <p key={idx} className="text-[11px] text-slate-300 font-mono">
-                                  {item.name} x {item.quantity} (unit price: €{item.price.toFixed(2)})
-                                </p>
-                              ))}
-                              <p className="text-xs font-bold text-yellow-500 font-mono mt-1">Total Paid Value: €{o.totalPrice.toFixed(2)}</p>
-                            </div>
-
-                            {/* delivery confirmation profile */}
-                            {o.deliveryConfirmationImage && (
-                              <div className="pt-2">
-                                <span className="text-[10px] text-slate-500 font-mono uppercase block mb-1">Delivery Drop Photo Profile</span>
-                                <img src={o.deliveryConfirmationImage} alt="Delivery Drop Confirmation" className="w-16 h-16 object-cover bg-slate-900 rounded border border-white/5" />
+  
+                            <div className="text-left lg:text-right shrink-0">
+                              <span className="text-[10px] text-slate-500 font-mono block mb-1.5 uppercase">Update Status Workflow</span>
+                              <div className="flex gap-1 flex-wrap justify-start lg:justify-end max-w-sm">
+                                {(['Pending', 'Confirmed', 'Preparing', 'Ready', 'Completed', 'Cancelled'] as const).map((status) => (
+                                  <button
+                                    key={status}
+                                    onClick={() => handleOrderStatusOverride(o.id, status)}
+                                    className={`px-2.5 py-1 text-[9px] font-mono font-bold border rounded transition-all cursor-pointer ${
+                                      o.status === status
+                                        ? 'bg-[#FFFF00] text-slate-950 border-yellow-500 font-bold shadow-sm'
+                                        : 'bg-slate-950 text-slate-400 border-slate-850 hover:border-slate-500 hover:text-white'
+                                    }`}
+                                  >
+                                    {status}
+                                  </button>
+                                ))}
                               </div>
-                            )}
-                          </div>
-
-                          <div className="text-left lg:text-right shrink-0">
-                            <span className="text-[10px] text-slate-500 font-mono block mb-1.5 uppercase">Update Status Workflow</span>
-                            <div className="flex gap-1 flex-wrap justify-start lg:justify-end max-w-sm">
-                              {(['Pending', 'Confirmed', 'Preparing', 'Ready', 'Completed', 'Cancelled'] as const).map((status) => (
-                                <button
-                                  key={status}
-                                  onClick={() => handleOrderStatusOverride(o.id, status)}
-                                  className={`px-2.5 py-1 text-[9px] font-mono font-bold border rounded transition-all cursor-pointer ${
-                                    o.status === status
-                                      ? 'bg-[#FFFF00] text-slate-950 border-yellow-500 font-bold shadow-sm'
-                                      : 'bg-slate-950 text-slate-400 border-slate-850 hover:border-slate-500 hover:text-white'
-                                  }`}
-                                >
-                                  {status}
-                                </button>
-                              ))}
                             </div>
                           </div>
-                        </div>
+  
+                          {/* Chat communication area */}
+                          <div className="border-t border-slate-900/60 pt-3 flex flex-wrap items-center justify-between gap-3">
+                            <button
+                              onClick={() => setChattingOrderId(chattingOrderId === o.id ? null : o.id)}
+                              className="flex items-center gap-2 text-[10px] font-bold uppercase transition-all py-1.5 px-3 rounded-lg bg-slate-900 hover:bg-slate-850 text-yellow-500 cursor-pointer"
+                            >
+                              <MessageCircle className="w-3.5 h-3.5" />
+                              {chattingOrderId === o.id ? 'Close dialogue communication log' : `Send message / Communicate with customer ${o.customerName}`}
+                            </button>
 
-                        {/* Chat communication area */}
-                        <div className="border-t border-slate-900/60 pt-3">
-                          <button
-                            onClick={() => setChattingOrderId(chattingOrderId === o.id ? null : o.id)}
-                            className="flex items-center gap-2 text-[10px] font-bold uppercase transition-all py-1.5 px-3 rounded-lg bg-slate-900 hover:bg-slate-850 text-yellow-500 cursor-pointer"
-                          >
-                            <MessageCircle className="w-3.5 h-3.5" />
-                            {chattingOrderId === o.id ? 'Close dialogue communication log' : `Send message / Communicate with customer ${o.customerName}`}
-                          </button>
-
+                            <button
+                              onClick={() => handleDeleteOrder(o.id)}
+                              className="bg-rose-500/10 hover:bg-rose-500 hover:text-white text-rose-400 border border-rose-500/20 text-[10px] uppercase font-bold px-3 py-1.5 rounded-lg transition-all flex items-center gap-1.5 cursor-pointer ml-auto"
+                              title="Delete Order entry permanently"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                              <span>Remove Order</span>
+                            </button>
+                          </div>
+  
+                          {/* Chat input form container when opened */}
                           {chattingOrderId === o.id && (
                             <div className="mt-3 bg-slate-950/80 border border-slate-850 rounded-xl p-3.5 space-y-3">
                               <p className="text-[10px] text-slate-400 font-mono tracking-tight">
@@ -2324,7 +2854,7 @@ This database package contains valid registered stock lists. Feel free to re-upl
                                     const isCustomer = msg.senderRole === 'Customer' || msg.senderRole === 'Guest';
                                     return (
                                       <div key={msg.id} className={`flex flex-col max-w-[85%] ${!isCustomer ? 'ml-auto text-right items-end' : 'mr-auto text-left items-start'}`}>
-                                        <span className="text-[8px] text-slate-550 font-mono font-bold uppercase">{msg.senderName} ({msg.senderRole})</span>
+                                        <span className="text-[8px] text-slate-555 font-mono font-bold uppercase">{msg.senderName} ({msg.senderRole})</span>
                                         <div className={`p-2.5 rounded-xl mt-0.5 leading-snug ${!isCustomer ? 'bg-[#FFFF00] text-slate-950 font-semibold rounded-tr-xs shadow-xs' : 'bg-slate-900 border border-slate-850/50 text-slate-200 rounded-tl-xs'}`}>
                                           {msg.text}
                                         </div>
@@ -2333,7 +2863,7 @@ This database package contains valid registered stock lists. Feel free to re-upl
                                   })
                                 )}
                               </div>
-
+  
                               <form onSubmit={(e) => handleSendAdminChatMessage(e, o)} className="flex gap-2 pt-1 border-t border-slate-900">
                                 <input
                                   type="text"
@@ -2350,8 +2880,8 @@ This database package contains valid registered stock lists. Feel free to re-upl
                             </div>
                           )}
                         </div>
-                      </div>
-                    ))}
+                      ))}
+                  </div>
                 </div>
               )}
             </div>

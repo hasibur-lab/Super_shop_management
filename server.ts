@@ -331,6 +331,65 @@ app.put('/api/admin/stores/:id', authenticateUser, verifyRole(['Master Admin']),
   broadcastEvent('store_updated', { store: updatedStore });
 });
 
+// Delete store endpoint (Master Admin only)
+app.delete('/api/admin/stores/:id', authenticateUser, verifyRole(['Master Admin']), (req, res) => {
+  const { id } = req.params;
+  let success = false;
+
+  dbInstance.update((data) => {
+    const index = data.stores.findIndex(s => s.id === id);
+    if (index > -1) {
+      data.stores.splice(index, 1);
+      
+      // Clean up products mapped to this store
+      data.products = data.products.filter(p => p.storeId !== id);
+      
+      // Clean up users mapped to this store
+      data.users.forEach(u => {
+        if (u.storeId === id) {
+          u.storeId = undefined;
+        }
+      });
+      
+      success = true;
+    }
+  });
+
+  if (!success) {
+    return res.status(404).json({ error: 'Store not found.' });
+  }
+
+  res.json({ success: true, message: 'Store, its registered products, and user assignments have been deleted successfully.' });
+  broadcastEvent('store_deleted', { storeId: id });
+});
+
+// Bulk delete stores endpoint (Master Admin only)
+app.post('/api/admin/stores/bulk-delete', authenticateUser, verifyRole(['Master Admin']), (req: any, res: any) => {
+  const { ids } = req.body;
+  if (!ids || !Array.isArray(ids)) {
+    return res.status(400).json({ error: 'Missing store IDs list.' });
+  }
+
+  dbInstance.update((data) => {
+    data.stores = data.stores.filter(s => {
+      const shouldDelete = ids.includes(s.id);
+      if (shouldDelete) {
+        // Clean up products and users for deleted stores
+        data.products = data.products.filter(p => p.storeId !== s.id);
+        data.users.forEach(u => {
+          if (u.storeId === s.id) {
+            u.storeId = undefined;
+          }
+        });
+      }
+      return !shouldDelete;
+    });
+  });
+
+  res.json({ success: true, message: 'All selected stores, corresponding products, and staff assignments removed successfully.' });
+  broadcastEvent('stores_bulk_deleted', { ids });
+});
+
 // Edit store opening and closing times (Master Admin, Admin, Store Owner, Store Staff)
 app.put('/api/stores/:id/times', authenticateUser, verifyRole(['Master Admin', 'Admin', 'Store Owner', 'Store Staff']), (req: any, res) => {
   const { id } = req.params;
@@ -637,6 +696,59 @@ app.put('/api/admin/users/:id', authenticateUser, verifyRole(['Master Admin']), 
   }
 });
 
+// Delete user endpoint (Master Admin only)
+app.delete('/api/admin/users/:id', authenticateUser, verifyRole(['Master Admin']), (req: any, res: any) => {
+  const { id } = req.params;
+  
+  if (id === req.user.id) {
+    return res.status(400).json({ error: "Self deletion is not allowed!" });
+  }
+
+  let success = false;
+  dbInstance.update((data) => {
+    const index = data.users.findIndex(u => u.id === id);
+    if (index > -1) {
+      data.users.splice(index, 1);
+      delete data.passwords[id];
+      success = true;
+    }
+  });
+
+  if (!success) {
+    return res.status(404).json({ error: 'User not found.' });
+  }
+
+  res.json({ success: true, message: 'User has been removed permanently.' });
+  broadcastEvent('user_deleted', { userId: id });
+});
+
+// Bulk delete users endpoint (Master Admin only)
+app.post('/api/admin/users/bulk-delete', authenticateUser, verifyRole(['Master Admin']), (req: any, res: any) => {
+  const { ids } = req.body;
+  if (!ids || !Array.isArray(ids)) {
+    return res.status(400).json({ error: 'Missing user IDs list.' });
+  }
+
+  let deletedCount = 0;
+  dbInstance.update((data) => {
+    data.users = data.users.filter(u => {
+      // Prevent deleting self or master admin by email
+      if (u.id === req.user.id || u.email === 'hasibmd461@gmail.com') {
+        return true;
+      }
+      const shouldDelete = ids.includes(u.id);
+      if (shouldDelete) {
+        delete data.passwords[u.id];
+        deletedCount++;
+      }
+      return !shouldDelete;
+    });
+  });
+
+  res.json({ success: true, message: `Successfully deleted ${deletedCount} user space accounts permanently.` });
+  broadcastEvent('users_bulk_deleted', { ids });
+});
+
 
 // 3. PRODUCT PLATFORM CATALOG CRUD
 app.get('/api/products', (req: any, res: any) => {
@@ -759,6 +871,33 @@ app.delete('/api/products/:id', authenticateUser, verifyRole(['Master Admin', 'A
 
   res.json({ success: true, message: 'Catalog item removed permanently.' });
   broadcastEvent('catalog_item_deleted', { productId: id });
+});
+
+// Bulk products delete endpoint (Master Admin, Admin, Store Owner, Store Staff)
+app.post('/api/products/bulk-delete', authenticateUser, verifyRole(['Master Admin', 'Admin', 'Store Owner', 'Store Staff']), (req: any, res: any) => {
+  const { ids } = req.body;
+  if (!ids || !Array.isArray(ids)) {
+    return res.status(400).json({ error: 'Missing product IDs list.' });
+  }
+
+  let deletedCount = 0;
+  dbInstance.update((data) => {
+    data.products = data.products.filter(p => {
+      const shouldDelete = ids.includes(p.id);
+      if (shouldDelete) {
+        // Permission check: Master Admin deletes anything, others delete only from their own stores
+        if (req.user.role !== 'Master Admin' && req.user.storeId !== p.storeId) {
+          return true; // keep it, unauthorized
+        }
+        deletedCount++;
+        return false;
+      }
+      return true;
+    });
+  });
+
+  res.json({ success: true, message: `Successfully deleted ${deletedCount} selected products from catalog.` });
+  broadcastEvent('products_bulk_deleted', { ids });
 });
 
 
@@ -921,6 +1060,58 @@ app.put('/api/orders/:id/status', authenticateUser, verifyRole(['Master Admin', 
 
   res.json({ success: true, order: updatedOrder, message: `Order status upgraded to "${status}".` });
   broadcastEvent('order_status_updated', { order: updatedOrder });
+});
+
+// Delete order endpoint (Master Admin, Admin, Store Owner, Store Staff)
+app.delete('/api/orders/:id', authenticateUser, verifyRole(['Master Admin', 'Admin', 'Store Owner', 'Store Staff']), (req: any, res) => {
+  const { id } = req.params;
+  let success = false;
+
+  dbInstance.update((data) => {
+    const index = data.orders.findIndex(o => o.id === id);
+    if (index > -1) {
+      const order = data.orders[index];
+      // Permission check: Master Admin deletes anything, others delete only from their own stores
+      if (req.user.role !== 'Master Admin' && req.user.storeId !== order.storeId) {
+        return;
+      }
+      data.orders.splice(index, 1);
+      success = true;
+    }
+  });
+
+  if (!success) {
+    return res.status(404).json({ error: 'Order not found or access barred.' });
+  }
+
+  res.json({ success: true, message: 'Order record deleted successfully.' });
+  broadcastEvent('order_deleted', { orderId: id });
+});
+
+// Bulk delete orders endpoint (Master Admin, Admin, Store Owner, Store Staff)
+app.post('/api/orders/bulk-delete', authenticateUser, verifyRole(['Master Admin', 'Admin', 'Store Owner', 'Store Staff']), (req: any, res: any) => {
+  const { ids } = req.body;
+  if (!ids || !Array.isArray(ids)) {
+    return res.status(400).json({ error: 'Missing order IDs list.' });
+  }
+
+  let deletedCount = 0;
+  dbInstance.update((data) => {
+    data.orders = data.orders.filter(o => {
+      const shouldDelete = ids.includes(o.id);
+      if (shouldDelete) {
+        if (req.user.role !== 'Master Admin' && req.user.storeId !== o.storeId) {
+          return true; // Keep it, access barred
+        }
+        deletedCount++;
+        return false;
+      }
+      return true;
+    });
+  });
+
+  res.json({ success: true, message: `Successfully removed ${deletedCount} selected orders from the dispatch ledger.` });
+  broadcastEvent('orders_bulk_deleted', { ids });
 });
 
 
