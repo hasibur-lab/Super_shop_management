@@ -346,9 +346,7 @@ export default function AdminPanel({ token, currentUser, activeTab: propActiveTa
 
   const handleShareStore = (store: any) => {
     try {
-      const origin = window.location.origin;
-      const path = window.location.pathname;
-      const url = `${origin}${path}#/store/${store.slug}?isolated=true`;
+      const url = `https://hasiburrahaman.link/#/store/${store.slug}?isolated=true`;
       
       navigator.clipboard.writeText(url).then(() => {
         setShareSuccess(`Unique URL copied to clipboard: ${store.name}`);
