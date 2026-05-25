@@ -101,6 +101,9 @@ export default function App() {
   // SSE toast popup trigger
   const [toastMessage, setToastMessage] = useState<{ title: string; body: string } | null>(null);
 
+  // Live real-time catalog refresh trigger
+  const [catalogRefreshTrigger, setCatalogRefreshTrigger] = useState(0);
+
   // High volume active emergency/priority modal alert with automatic audio synthesizer loop
   const [highVolumeAlert, setHighVolumeAlert] = useState<{
     id: string;
@@ -229,7 +232,12 @@ export default function App() {
       }
     };
     fetchCatalog();
-    setCart([]); // reset active store cart choices
+    // Keep cart intact so that real-time catalog changes don't wipe active shopping baskets unless store changes
+  }, [activeStore, catalogRefreshTrigger]);
+
+  // Handle shopping bag reset strictly if active store changes
+  useEffect(() => {
+    setCart([]);
   }, [activeStore]);
 
   // Fetch contextual historical orders and chat stream for customers/guests
@@ -393,6 +401,31 @@ export default function App() {
                 setIsAlertMuted(false);
               }
             }
+          }
+        } else if (
+          parsed.type === 'catalog_item_added' ||
+          parsed.type === 'catalog_item_updated' ||
+          parsed.type === 'catalog_item_deleted' ||
+          parsed.type === 'products_bulk_deleted'
+        ) {
+          // Immediately update view with zero lag
+          setCatalogRefreshTrigger(prev => prev + 1);
+          
+          if (parsed.type === 'catalog_item_added' && parsed.data?.product) {
+            setToastMessage({
+              title: '🆕 Product Added',
+              body: `"${parsed.data.product.name}" is now available publicly in real-time!`
+            });
+          } else if (parsed.type === 'catalog_item_updated' && parsed.data?.product) {
+            setToastMessage({
+              title: '🔄 Product Updated',
+              body: `"${parsed.data.product.name}" details have been updated in real-time!`
+            });
+          } else if (parsed.type === 'catalog_item_deleted') {
+            setToastMessage({
+              title: '🗑️ Product Removed',
+              body: 'Catalog item removed from the persistent registry.'
+            });
           }
         } else if (parsed.type === 'chat_received') {
           if (parsed.data?.storeId === activeStore?.id) {

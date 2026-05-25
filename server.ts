@@ -1,6 +1,7 @@
 import express from 'express';
 import path from 'path';
 import http from 'http';
+import fs from 'fs';
 import { createServer as createViteServer } from 'vite';
 import { z } from 'zod';
 import { GoogleGenAI, Type } from "@google/genai";
@@ -11,6 +12,15 @@ const app = express();
 const PORT = 3000;
 
 app.use(express.json({ limit: '50mb' }));
+
+// Create local uploads directory if it doesn't exist
+const uploadsDir = path.join(process.cwd(), 'uploads');
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir, { recursive: true });
+}
+
+// Serve uploaded assets statically
+app.use('/uploads', express.static(uploadsDir));
 
 // Server-Sent Events (SSE) clients for real-time order/chat signals
 let sseClients: any[] = [];
@@ -285,21 +295,52 @@ app.post('/api/admin/stores', authenticateUser, verifyRole(['Master Admin']), (r
   }
 });
 
-// Base64 direct upload simulator using mock storagePut S3 utility
+// Direct file upload to local persistent storage system
 app.post('/api/admin/stores/upload', authenticateUser, (req, res) => {
   const { base64Data, filename } = req.body;
   if (!base64Data) {
     return res.status(400).json({ error: 'Provide a valid base64 image encoding buffer.' });
   }
-  // S3 simulation
-  const uniqueKey = `${Date.now()}-${filename || 'shopPhoto.png'}`;
-  const persistentUrl = `https://images.unsplash.com/photo-1517841905240-472988babdf9?w=600&auto=format`; // mock fallback url
-  // If base64 conforms, return structured mock S3 storage put destination:
-  res.json({
-    success: true,
-    url: base64Data.startsWith('data:image') ? base64Data : persistentUrl,
-    key: `s3://hasibs-retail-pro/images/${uniqueKey}`
-  });
+
+  try {
+    let base64Image = base64Data;
+    let extension = 'png';
+
+    if (base64Data.startsWith('data:')) {
+      const parts = base64Data.split(';base64,');
+      const metadata = parts[0];
+      base64Image = parts[1];
+      const mimeType = metadata.replace('data:', '');
+      const extMatch = mimeType.split('/');
+      if (extMatch.length > 1) {
+        extension = extMatch[1];
+      }
+    }
+
+    // Ensure unique, safe, sanitized filename in local uploads
+    const cleanPrefix = (filename || 'image')
+      .replace(/\.[^/.]+$/, '') // strip existing extension
+      .replace(/[^a-zA-Z0-9_-]/g, '_')
+      .toLowerCase();
+    
+    const uniqueFilename = `${Date.now()}-${cleanPrefix}.${extension}`;
+    const uploadPath = path.join(process.cwd(), 'uploads', uniqueFilename);
+
+    // Convert and write to local storage
+    const imageBuffer = Buffer.from(base64Image, 'base64');
+    fs.writeFileSync(uploadPath, imageBuffer);
+
+    const publicUrl = `/uploads/${uniqueFilename}`;
+
+    res.json({
+      success: true,
+      url: publicUrl,
+      key: `local-uploads://${uniqueFilename}`
+    });
+  } catch (err: any) {
+    console.error('Error saving uploaded product/store photo:', err);
+    res.status(500).json({ error: 'Storage system write failure.' });
+  }
 });
 
 // Edit store property fields (Master Admin only)
