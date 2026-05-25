@@ -28,7 +28,7 @@ export default function SettingsPanel({ user, token, onProfileUpdated }: Setting
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
-  
+
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -414,7 +414,6 @@ export default function SettingsPanel({ user, token, onProfileUpdated }: Setting
           </div>
         </form>
       </div>
-
     </div>
   );
 }

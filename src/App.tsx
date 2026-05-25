@@ -516,7 +516,9 @@ export default function App() {
 
   const shareStoreLink = (store: Store) => {
     try {
-      const url = `https://hasiburrahaman.link/#/store/${store.slug}?isolated=true`;
+      const origin = window.location.origin;
+      const path = window.location.pathname;
+      const url = `${origin}${path}#/store/${store.slug}?isolated=true`;
       
       // Use Clipboard API
       navigator.clipboard.writeText(url).then(() => {
