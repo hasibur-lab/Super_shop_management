@@ -1,0 +1,11 @@
+{
+  "name": "Super shop management system",
+  "description": "Supermarket \u0026 shop management system with real-time inventory tracking, barcode scanning, and automated sales reporting features.",
+  "requestFramePermissions": [
+    "geolocation",
+    "camera"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
